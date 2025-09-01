@@ -1,0 +1,18 @@
+[project]
+name = "sendgrid_nodes"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "griptape-nodes",
+    "sendgrid",
+]
+
+[tool.uv.sources]
+griptape-nodes = { git = "https://github.com/griptape-ai/griptape-nodes", rev="latest"}
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+

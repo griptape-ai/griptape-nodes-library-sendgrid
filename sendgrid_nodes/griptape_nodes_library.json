@@ -1,0 +1,44 @@
+{
+  "name": "Sendgrid Library",
+  "library_schema_version": "0.1.0",
+  "metadata": {
+    "author": "Ian Massingham",
+    "description": "Nodes for interating with the Sendgrid API",
+    "library_version": "0.1.0",
+    "engine_version": "0.51.0",
+    "tags": [
+      "Griptape",
+      "AI",
+      "Communications",
+      "Email",
+      "Sendgrid"
+    ],
+    "dependencies": {
+      "pip_dependencies": [
+        "griptape-nodes",
+        "sendgrid"
+      ]
+    }
+  },
+  "categories": [
+    {
+      "misc/email": {
+        "color": "border-gray-500",
+        "title": "Email",
+        "description": "Email Nodes",
+        "icon": "Folder"
+      }
+    }
+  ],
+  "nodes": [
+    {
+      "class_name": "SendGridEmailNode",
+      "file_path": "sendgrid_email_node.py",
+      "metadata": {
+        "category": "misc/email",
+        "description": "Send an email using the SendGrid API.",
+        "display_name": "SendGrid Email"
+      }
+    }
+  ]
+}
