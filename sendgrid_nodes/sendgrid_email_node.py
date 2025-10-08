@@ -4,7 +4,6 @@ Sends emails using the SendGrid API with support for text, HTML content and atta
 """
 from typing import Any
 import base64
-import os
 import mimetypes
 
 from griptape_nodes.exe_types.core_types import (
@@ -22,6 +21,7 @@ from griptape.artifacts import (
 )
 
 from griptape_nodes.exe_types.node_types import DataNode, NodeResolutionState, BaseNode
+from griptape_nodes.retained_mode.griptape_nodes import GriptapeNodes
 
 try:
     import sendgrid
@@ -476,17 +476,14 @@ class SendGridEmailNode(DataNode):
             raise ValueError(error_msg)
         
         try:
-            # Get API key from configuration
-            api_key = self.get_config_value("SendGrid", "SENDGRID_API_KEY")
+            # Get API key from secrets manager
+            api_key = GriptapeNodes.SecretsManager().get_secret("SENDGRID_API_KEY")
             if not api_key:
-                # Try environment variable as fallback
-                api_key = os.environ.get('SENDGRID_API_KEY')
-                if not api_key:
-                    error_msg = "SendGrid API key not found. Please set SENDGRID_API_KEY in configuration or environment variables"
-                    self.parameter_output_values["status"] = error_msg
-                    logs.append(f"ERROR: {error_msg}")
-                    self.parameter_output_values["logs"] = "\n".join(logs)
-                    raise ValueError(error_msg)
+                error_msg = "SendGrid API key not found. Please set SENDGRID_API_KEY in configuration or environment variables"
+                self.parameter_output_values["status"] = error_msg
+                logs.append(f"ERROR: {error_msg}")
+                self.parameter_output_values["logs"] = "\n".join(logs)
+                raise ValueError(error_msg)
             
             logs.append("API key found")
             
@@ -690,10 +687,8 @@ class SendGridEmailNode(DataNode):
             return exceptions
             
         # Check for API key
-        api_key = self.get_config_value("SendGrid", "SENDGRID_API_KEY")
+        api_key = GriptapeNodes.SecretsManager().get_secret("SENDGRID_API_KEY")
         if not api_key:
-            api_key = os.environ.get('SENDGRID_API_KEY')
-            if not api_key:
-                exceptions.append(ValueError("SENDGRID_API_KEY is not defined in configuration or environment variables"))
+            exceptions.append(ValueError("SENDGRID_API_KEY is not defined in configuration or environment variables"))
         
         return exceptions if exceptions else None

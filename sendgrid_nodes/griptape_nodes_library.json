@@ -1,6 +1,17 @@
 {
   "name": "Sendgrid Library",
   "library_schema_version": "0.1.0",
+  "settings": [
+    {
+      "description": "API keys required by nodes in this library",
+      "category": "app_events.on_app_initialization_complete",
+      "contents": {
+        "secrets_to_register": [
+          "SENDGRID_API_KEY"
+        ]
+      }
+    }
+  ],
   "metadata": {
     "author": "Ian Massingham",
     "description": "Nodes for interating with the Sendgrid API",
