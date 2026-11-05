@@ -4,9 +4,12 @@ Sends emails using the SendGrid API with support for text, HTML content and atta
 """
 from typing import Any
 import base64
+import json
 import mimetypes
 
 from griptape_nodes.exe_types.core_types import (
+    NodeError,
+    NodeErrorLink,
     Parameter,
     ParameterMode,
     ParameterTypeBuiltin,
@@ -26,9 +29,11 @@ from griptape_nodes.retained_mode.griptape_nodes import GriptapeNodes
 try:
     import sendgrid
     from sendgrid.helpers.mail import Mail, Email, To, Content, Attachment, FileContent, FileName, FileType, Disposition
+    from python_http_client.exceptions import HTTPError
     SENDGRID_AVAILABLE = True
 except ImportError:
     SENDGRID_AVAILABLE = False
+    HTTPError = ()  # type: ignore[assignment,misc]  # never raised without the SDK
 
 # Optional dependency for downloading ImageUrlArtifacts
 try:
@@ -36,6 +41,58 @@ try:
     REQUESTS_AVAILABLE = True
 except ImportError:
     REQUESTS_AVAILABLE = False
+
+
+API_KEY_NAME = "SENDGRID_API_KEY"
+API_KEY_URL = "https://www.twilio.com/docs/sendgrid/ui/account-and-settings/api-keys"
+SENDER_VERIFICATION_URL = "https://www.twilio.com/docs/sendgrid/ui/sending-email/sender-verification"
+PROVIDER = "SendGrid"
+MAX_ATTACHMENT_SIZE_MB = 10
+MAX_TOTAL_SIZE_MB = 30
+HTTP_FORBIDDEN = 403
+
+
+class _SendGridResponse:
+    """The parts of an `HTTPError` that `NodeError.from_http_response` reads.
+
+    SendGrid lists problems under `errors`, so the first one is also exposed as `message`.
+    """
+
+    def __init__(self, error: Any) -> None:
+        self.status_code = int(getattr(error, "status_code", 0) or 0)
+        self.headers = getattr(error, "headers", None) or {}
+        body = getattr(error, "body", None)
+        self.text = body.decode("utf-8", errors="replace") if isinstance(body, bytes) else str(body or "")
+
+    def json(self) -> Any:
+        parsed = json.loads(self.text)
+        errors = parsed.get("errors") if isinstance(parsed, dict) else None
+        if isinstance(errors, list) and errors and isinstance(errors[0], dict) and "message" not in parsed:
+            return {**parsed, "message": errors[0].get("message")}
+        return parsed
+
+
+def error_from_http_error(error: Any) -> NodeError:
+    """The error for a SendGrid response that is not a success.
+
+    A 403 is usually an unverified sender or a key without Mail Send permission, not a refused key.
+    """
+    response = _SendGridResponse(error)
+    forbidden = response.status_code == HTTP_FORBIDDEN
+    node_error = NodeError.from_http_response(
+        response, provider=PROVIDER, secret_name=API_KEY_NAME, key_refused=False if forbidden else None
+    )
+    if forbidden:
+        node_error.links.append(NodeErrorLink(label="Sender verification", url=SENDER_VERIFICATION_URL))
+    return node_error
+
+
+def attachment_too_large_error(filename: str, size_mb: float) -> NodeError:
+    return NodeError(
+        f"Attachment '{filename}' is {size_mb:.2f} MB, over the {MAX_ATTACHMENT_SIZE_MB} MB limit. "
+        "Remove it or attach a smaller file.",
+        fields={"parameter": "attachments", "attachment": filename},
+    )
 
 
 class VideoArtifact:
@@ -205,7 +262,7 @@ class SendGridEmailNode(DataNode):
     def _check_attachment_size(self, content: str, filename: str, logs: list) -> None:
         """
         Check if attachment size is within limits.
-        Raises ValueError if size exceeds limits.
+        Raises NodeError if size exceeds limits.
         """
         # Calculate size of base64 content (this is larger than original due to encoding)
         # Base64 encoding increases size by ~33%, so we check the decoded size
@@ -215,10 +272,10 @@ class SendGridEmailNode(DataNode):
         
         logs.append(f"DEBUG: Attachment '{filename}' size: {original_size_mb:.2f} MB")
         
-        if original_size_mb > 10:
-            error_msg = f"Attachment '{filename}' ({original_size_mb:.2f} MB) exceeds 10MB limit. Email processing aborted."
-            logs.append(f"ERROR: {error_msg}")
-            raise ValueError(error_msg)
+        if original_size_mb > MAX_ATTACHMENT_SIZE_MB:
+            error = attachment_too_large_error(filename, original_size_mb)
+            logs.append(f"ERROR: {error}")
+            raise error
 
     def _get_mime_type(self, artifact: Any, filename: str = None) -> str:
         """Determine MIME type from artifact type and filename."""
@@ -269,10 +326,10 @@ class SendGridEmailNode(DataNode):
                 # Check attachment size for dict format (content may not be base64 encoded)
                 content_size_mb = len(content.encode('utf-8')) / (1024 * 1024)
                 logs.append(f"DEBUG: Dict attachment '{filename}' size: {content_size_mb:.2f} MB")
-                if content_size_mb > 10:
-                    error_msg = f"Attachment '{filename}' ({content_size_mb:.2f} MB) exceeds 10MB limit. Email processing aborted."
-                    logs.append(f"ERROR: {error_msg}")
-                    raise ValueError(error_msg)
+                if content_size_mb > MAX_ATTACHMENT_SIZE_MB:
+                    error = attachment_too_large_error(filename, content_size_mb)
+                    logs.append(f"ERROR: {error}")
+                    raise error
                     
                 logs.append(f"DEBUG: Dict artifact - filename: {filename}, content_length: {len(content)}, type: {file_type}")
                 return filename, content, file_type
@@ -334,9 +391,9 @@ class SendGridEmailNode(DataNode):
                         
                     logs.append(f"DEBUG: ImageUrlArtifact - filename: {filename}, content_length: {len(content)}, mime_type: {mime_type}")
                     return filename, content, mime_type
-                except ValueError as size_error:
+                except NodeError:
                     # Size violation - let it propagate up to abort email processing
-                    raise size_error
+                    raise
                 except Exception as e:
                     logs.append(f"DEBUG: Failed to download ImageUrlArtifact: {str(e)}")
                     # If download fails, skip this attachment
@@ -375,9 +432,9 @@ class SendGridEmailNode(DataNode):
                         
                     logs.append(f"DEBUG: VideoUrlArtifact - filename: {filename}, content_length: {len(content)}, mime_type: {mime_type}")
                     return filename, content, mime_type
-                except ValueError as size_error:
+                except NodeError:
                     # Size violation - let it propagate up to abort email processing
-                    raise size_error
+                    raise
                 except Exception as e:
                     logs.append(f"DEBUG: Failed to download VideoUrlArtifact: {str(e)}")
                     # If download fails, skip this attachment
@@ -388,9 +445,9 @@ class SendGridEmailNode(DataNode):
                 logs.append(f"DEBUG: Unknown artifact type: {type(artifact).__name__}")
                 return None
                 
-        except ValueError as size_error:
+        except NodeError:
             # Size violation - let it propagate up to abort email processing
-            raise size_error
+            raise
         except Exception as e:
             logs.append(f"DEBUG: Exception in _extract_attachment_data: {str(e)}")
             import traceback
@@ -426,6 +483,14 @@ class SendGridEmailNode(DataNode):
             self.parameter_output_values["logs"] = "\n".join(logs)
             raise ImportError(error_msg)
         
+        # The key comes first and alone, so a missing key is the only thing the user is told about
+        if not self._get_api_key():
+            error = NodeError.from_missing_secret(API_KEY_NAME, key_url=API_KEY_URL)
+            self.parameter_output_values["status"] = str(error)
+            logs.append(f"ERROR: {error}")
+            self.parameter_output_values["logs"] = "\n".join(logs)
+            raise error
+
         # Get parameter values
         to_email = self.get_parameter_value("to")
         from_email = self.get_parameter_value("from")
@@ -454,37 +519,16 @@ class SendGridEmailNode(DataNode):
         self.parameter_output_values["logs"] = "\n".join(logs)
         
         # Validate required fields
-        if not to_email:
-            error_msg = "To email address is required"
-            self.parameter_output_values["status"] = error_msg
-            logs.append(f"ERROR: {error_msg}")
+        input_errors = self._input_errors()
+        if input_errors:
+            error = input_errors[0]
+            self.parameter_output_values["status"] = str(error)
+            logs.append(f"ERROR: {error}")
             self.parameter_output_values["logs"] = "\n".join(logs)
-            raise ValueError(error_msg)
-            
-        if not from_email:
-            error_msg = "From email address is required"
-            self.parameter_output_values["status"] = error_msg
-            logs.append(f"ERROR: {error_msg}")
-            self.parameter_output_values["logs"] = "\n".join(logs)
-            raise ValueError(error_msg)
-            
-        if not text_content and not html_content:
-            error_msg = "Either text_content or html_content must be provided"
-            self.parameter_output_values["status"] = error_msg
-            logs.append(f"ERROR: {error_msg}")
-            self.parameter_output_values["logs"] = "\n".join(logs)
-            raise ValueError(error_msg)
-        
+            raise error
+
         try:
-            # Get API key from secrets manager
-            api_key = GriptapeNodes.SecretsManager().get_secret("SENDGRID_API_KEY")
-            if not api_key:
-                error_msg = "SendGrid API key not found. Please set SENDGRID_API_KEY in configuration or environment variables"
-                self.parameter_output_values["status"] = error_msg
-                logs.append(f"ERROR: {error_msg}")
-                self.parameter_output_values["logs"] = "\n".join(logs)
-                raise ValueError(error_msg)
-            
+            api_key = self._get_api_key()
             logs.append("API key found")
             
             # Initialize SendGrid client
@@ -535,13 +579,11 @@ class SendGridEmailNode(DataNode):
                         # Extract attachment data using utility function
                         attachment_data = self._extract_attachment_data(attachment_artifact, i, logs)
                     
-                    except ValueError as size_error:
+                    except NodeError as size_error:
                         # Size limit exceeded - abort entire email processing
-                        error_msg = str(size_error)
-                        logs.append(f"ABORT: {error_msg}")
+                        logs.append(f"ABORT: {size_error}")
                         self.parameter_output_values["logs"] = "\n".join(logs)
-                        # Re-raise the ValueError so it's caught by the main exception handler
-                        raise size_error
+                        raise
                     
                     except Exception as e:
                         logs.append(f"ERROR: Failed to process attachment {i}: {str(e)}")
@@ -569,11 +611,15 @@ class SendGridEmailNode(DataNode):
                     
                     logs.append(f"DEBUG: Total email size so far: {total_email_size_mb:.2f} MB")
                     
-                    if total_email_size_mb > 30:
-                        error_msg = f"Total email size ({total_email_size_mb:.2f} MB) exceeds 30MB limit. Aborting email processing."
-                        logs.append(f"ERROR: {error_msg}")
+                    if total_email_size_mb > MAX_TOTAL_SIZE_MB:
+                        error = NodeError(
+                            f"The attachments total {total_email_size_mb:.2f} MB, over the {MAX_TOTAL_SIZE_MB} MB "
+                            "limit for one email. Remove some attachments or use smaller files.",
+                            fields={"parameter": "attachments"},
+                        )
+                        logs.append(f"ERROR: {error}")
                         self.parameter_output_values["logs"] = "\n".join(logs)
-                        raise ValueError(error_msg)
+                        raise error
                     
                     try:
                         # Create SendGrid attachment
@@ -622,21 +668,24 @@ class SendGridEmailNode(DataNode):
             
             self.parameter_output_values["status"] = status_msg
             
+        except NodeError as e:
+            self.parameter_output_values["status"] = f"❌ {e}"
+            logs.append(f"ERROR: {e}")
+            raise
+        except HTTPError as e:
+            error = error_from_http_error(e)
+            self.parameter_output_values["status"] = f"❌ {error}"
+            logs.append(f"ERROR: {error}")
+            raise error from e
+        except OSError as e:
+            error = NodeError.from_request_exception(e, provider=PROVIDER, secret_name=API_KEY_NAME)
+            self.parameter_output_values["status"] = f"❌ {error}"
+            logs.append(f"ERROR: {error}")
+            raise error from e
         except Exception as e:
-            # Check if this is a size violation error
-            error_str = str(e)
-            if "exceeds" in error_str and ("MB limit" in error_str or "10MB limit" in error_str or "30MB limit" in error_str):
-                # This is a size violation - handle gracefully without raising exception
-                error_msg = f"❌ {error_str}"
-                self.parameter_output_values["status"] = error_msg
-                logs.append(f"BLOCKED: {error_str}")
-                # Don't raise exception - let node complete with error status
-            else:
-                # This is some other technical error - still raise exception
-                error_msg = f"❌ Error sending email: {error_str}"
-                self.parameter_output_values["status"] = error_msg
-                logs.append(f"ERROR: {error_str}")
-                raise Exception(f"Failed to send email: {error_str}")
+            self.parameter_output_values["status"] = f"❌ Error sending email: {e}"
+            logs.append(f"ERROR: {e}")
+            raise
         
         finally:
             # Always update logs
@@ -677,18 +726,30 @@ class SendGridEmailNode(DataNode):
             self.mark_for_processing()
             self.remove_parameter_value(target_parameter.name)
 
-    def validate_before_workflow_run(self) -> list[Exception] | None:
-        """Validate the node configuration before running."""
-        exceptions = []
-        
-        # Check if SendGrid is available
-        if not SENDGRID_AVAILABLE:
-            exceptions.append(ImportError("SendGrid library not installed. Please install with: pip install sendgrid"))
-            return exceptions
-            
-        # Check for API key
-        api_key = GriptapeNodes.SecretsManager().get_secret("SENDGRID_API_KEY")
-        if not api_key:
-            exceptions.append(ValueError("SENDGRID_API_KEY is not defined in configuration or environment variables"))
-        
-        return exceptions if exceptions else None
+    def _get_api_key(self) -> str | None:
+        return GriptapeNodes.SecretsManager().get_secret(API_KEY_NAME) or None
+
+    def _input_errors(self) -> list[NodeError]:
+        """Problems with the inputs, in the order a user would fix them."""
+        errors: list[NodeError] = []
+        if not self.get_parameter_value("to"):
+            errors.append(NodeError("Enter an address in 'To Email'.", fields={"parameter": "to"}))
+        if not self.get_parameter_value("from"):
+            errors.append(
+                NodeError(
+                    "Enter a verified sender address in 'From Email'.",
+                    fields={"parameter": "from"},
+                    links=[NodeErrorLink(label="Sender verification", url=SENDER_VERIFICATION_URL)],
+                )
+            )
+        if not self.get_parameter_value("text_content") and not self.get_parameter_value("html_content"):
+            errors.append(NodeError("Enter content in 'Text Content' or 'HTML Content'."))
+        return errors
+
+    def validate_before_node_run(self) -> list[Exception] | None:
+        """Report a missing API key on its own, then input problems when sending is enabled."""
+        if not self._get_api_key():
+            return [NodeError.from_missing_secret(API_KEY_NAME, key_url=API_KEY_URL)]
+        if not self.get_parameter_value("send"):
+            return None
+        return list(self._input_errors()) or None
