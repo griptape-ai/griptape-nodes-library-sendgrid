@@ -9,7 +9,7 @@ The SendGrid Email Node allows you to send emails through the SendGrid API with 
 - Smart size validation (10MB per attachment, 30MB total)
 - Send toggle for testing
 - Comprehensive debug logging
-- Graceful error handling
+- Clear error messages on the node when a run fails
 
 ## Prerequisites
 
@@ -205,32 +205,27 @@ The node includes comprehensive debugging capabilities through a hidden `logs` o
 
 ## Error Handling
 
-The node provides robust error handling with graceful failure modes:
+A failed run stops with an error on the node. The message says what to fix, and the status code and SendGrid's response are under More info. The `status` output also holds the message. If the node's output is wired onward, downstream nodes do not run.
 
-### Size Limit Violations (Graceful Handling):
-- **Individual file > 10MB**: Email blocked, clear error message in status
-- **Total email > 30MB**: Email blocked, clear error message in status  
-- **No exceptions thrown** - Node completes successfully with error status
-- **Detailed feedback** - Exact file sizes and limits shown in error messages
+### Size Limit Violations:
+- **Individual file > 10MB**: the run fails and the error names the file and its size
+- **Total attachments > 30MB**: the run fails and the error gives the total
 
-### Technical Errors (Exception Handling):
-- Missing required parameters (to, from, content)
-- Invalid API key
-- SendGrid API errors
-- Network connectivity issues
-- Attachment download failures
+### Other Failures:
+- **Missing API key**: reported first and on its own, with links to Settings and SendGrid's key docs
+- **Missing To Email, From Email or content**: reported before the node starts
+- **SendGrid rejects the request** (refused key, unverified sender, bad address, rate limit): SendGrid's own reason, with the status code and response attached
+- **Network connectivity issues**: the error says SendGrid could not be reached
 
-### Error Reporting:
-- **Status Parameter**: Clear, user-friendly error messages
-- **Debug Logs**: Detailed technical information for troubleshooting
-- **Graceful vs Exception**: Size violations are graceful, technical errors throw exceptions
-- **Real-time Feedback**: Errors reported immediately during processing
+Attachments that cannot be loaded or downloaded, and unsupported artifact types, are skipped with a line in the debug logs. The email is still sent without them.
 
 ### Example Error Messages:
 ```
-❌ Attachment 'large_video.mp4' (15.67 MB) exceeds 10MB limit. Email processing aborted.
-❌ Total email size (32.45 MB) exceeds 30MB limit. Email processing aborted.  
-❌ Error sending email: Invalid API key
+SENDGRID_API_KEY is not set. Add it in Settings → API Keys & Secrets, then run the node again.
+Enter an address in 'To Email'.
+Attachment 'large_video.mp4' is 15.67 MB, over the 10 MB limit. Remove it or attach a smaller file.
+The attachments total 32.45 MB, over the 30 MB limit for one email. Remove some attachments or use smaller files.
+SendGrid refused the API key. Update SENDGRID_API_KEY in Settings → API Keys & Secrets, then run the node again.
 ```
 
 ## Configuration
@@ -261,7 +256,7 @@ Video Generator → VideoUrlArtifact → SendGrid Email
 ```
 - Automatically downloads video from URL
 - Validates size limits (10MB per file, 30MB total)
-- Handles large video files gracefully with clear error messages
+- Fails with a clear error message when a video is over the limits
 
 ### Multi-Media Workflow
 ```
@@ -305,11 +300,11 @@ When using the legacy dict format, you can specify these MIME types manually or 
 7. **Monitor the logs** - enable debug logs when troubleshooting
 8. **Use URL artifacts efficiently** - VideoUrlArtifact and ImageUrlArtifact download automatically
 9. **Mix attachment types** - combine artifacts and legacy dict format as needed
-10. **Handle size violations gracefully** - check status parameter for size limit errors
+10. **Keep attachments under the limits** - an oversize attachment fails the run with an error on the node
 
 ## Troubleshooting
 
-### "API key not found" error
+### "SENDGRID_API_KEY is not set" error
 - Ensure SENDGRID_API_KEY is set in configuration or environment
 - Verify the API key has the correct permissions in SendGrid
 
@@ -320,7 +315,7 @@ When using the legacy dict format, you can specify these MIME types manually or 
 - Review SendGrid delivery logs in the dashboard
 
 ### Size limit violations
-- **Individual file too large**: Check status parameter for specific file sizes
+- **Individual file too large**: The error on the node names the file and its size
 - **Total email too large**: Reduce number or size of attachments
 - **Size detection**: The node shows exact sizes in error messages
 - **Prevention**: Use artifacts for automatic size validation
