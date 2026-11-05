@@ -6,6 +6,7 @@ from typing import Any
 import base64
 import json
 import mimetypes
+from urllib.error import URLError
 
 from griptape_nodes.exe_types.core_types import (
     NodeError,
@@ -678,7 +679,15 @@ class SendGridEmailNode(DataNode):
             logs.append(f"ERROR: {error}")
             raise error from e
         except OSError as e:
-            error = NodeError.from_request_exception(e, provider=PROVIDER, secret_name=API_KEY_NAME)
+            if isinstance(e, URLError):
+                # python_http_client wraps a refused connection, DNS failure or connect timeout in URLError,
+                # which from_request_exception can't tell from other errors.
+                error = NodeError(
+                    f"Could not reach {PROVIDER}. Check your internet connection, then run the node again.",
+                    fields={"reason": str(e.reason)},
+                )
+            else:
+                error = NodeError.from_request_exception(e, provider=PROVIDER, secret_name=API_KEY_NAME)
             self.parameter_output_values["status"] = f"❌ {error}"
             logs.append(f"ERROR: {error}")
             raise error from e
